@@ -1,118 +1,111 @@
 package com.example.scuclockin.core;
 
 import com.alibaba.fastjson.JSONObject;
-import com.example.common.BaseErrorCode;
-import com.example.common.exception.AuthExcetption;
 import com.example.scuclockin.common.ClockErrorCode;
 import com.example.scuclockin.common.ClockException;
 import com.example.scuclockin.model.DataPack;
-import com.example.scuclockin.model.ResponseTemplate;
 import lombok.SneakyThrows;
 import lombok.extern.log4j.Log4j2;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.scheduling.annotation.Async;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.util.MultiValueMap;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestTemplate;
 
-import javax.annotation.Resource;
-import java.util.Date;
+import java.io.*;
 
 @Log4j2
 @Service
 public class LoginService {
-    private static final RestTemplate restTemplate = new RestTemplate();
-    private static final String SAVE_URL = "https://wfw.scu.edu.cn/ncov/wap/default/save";
     private static final String LOGIN_URL = "https://ua.scu.edu.cn/login";
-    private static final String COOKIES = "_ga= eai-sess=ann60quh7hltgh53dgq2kurl94; UUkey=a20ac0661d05ca0de9a816912996aaf0; Hm_lvt_48b682d4885d22a90111e46b972e3268=1627832135; Hm_lpvt_48b682d4885d22a90111e46b972e3268=1627834554";
-    private static final String EMAIL = "599390673@qq.com";
+    private static final String BASE_URL = "https://ua.scu.edu.cn";
+    private static final String CAPTCHA_URI = "/captcha?captchaId=%s";
+    private static final RestTemplate restTemplate = new RestTemplate();
 
-    @Resource
-    private MailService mailService;
 
-    // @Scheduled(fixedRate = 1000*1000)
-    @SneakyThrows
-    public String getExecution(){
+    @Scheduled(fixedRate = 1000*100)
+    public String getLoginUrl(){
         try {
             // 通过延迟2000毫秒然后再去请求可解决js异步加载获取不到数据的问题
             Document doc= Jsoup.connect(LOGIN_URL).timeout(2000).get();
-            Elements elements = doc.getElementsByAttributeValueMatching("name","execution");
-            String execution = elements.get(0).attr("value");
-            return execution;
+            getExecution(doc);
+            String id = getCaptchaId(doc);
+            requestCaptcha(id);
+            return "";
         }catch (Exception e){
             throw new ClockException(ClockErrorCode.FAILED_REQUEST_DATA);
         }
     }
 
+    public static String getExecution(Document doc){
+        Elements elements = doc.getElementsByAttributeValueMatching("name","execution");
+        String execution = elements.get(0).attr("value");
+        log.info(execution);
+        return execution;
+    }
 
-    // @Scheduled(cron = "0 5 */24 * * *")
-    @Scheduled(cron = "1 1/50 * * * *")
-    public void test(){
-        HttpHeaders headers = getHeader(COOKIES);
-        MultiValueMap<String, Object> postParams = new DataPack().toMultiValueMap();
-        HttpEntity<MultiValueMap> entity = new HttpEntity<>(postParams,headers);
-        try {
-            JSONObject rep = restTemplate.postForObject(SAVE_URL, entity, JSONObject.class);
-            ResponseTemplate result = rep.toJavaObject(ResponseTemplate.class);
-            if (result != null && "操作成功".equals(result.getM())){
-                succHandler("今日已打卡成功");
-                return;
-            }
-            if (result != null && "今天已经填报了".equals(result.getM())){
-                succHandler("今天已经填报了");
-            }
-            failHandler(result.getM());
-        }catch (Exception e){
-            failHandler("打卡失败");
+    public static String getCaptchaId(Document doc){
+        Elements scriptElements = doc.getElementsByTag("script");
+        if (scriptElements == null && scriptElements.size() == 0){
+            throw new RuntimeException();
         }
-    }
-
-    private HttpHeaders getHeader(String cookie){
-        HttpHeaders headers = new HttpHeaders();
-        headers.add(HttpHeaders.ACCEPT, "application/json, text/javascript, */*; q=0.01");
-        headers.add(HttpHeaders.CONTENT_TYPE, "application/x-www-form-urlencoded; charset=UTF-8");
-        headers.add(HttpHeaders.COOKIE, cookie);
-        headers.add(HttpHeaders.HOST, "wfw.scu.edu.cn");
-        headers.add(HttpHeaders.ORIGIN, "https://wfw.scu.edu.cn");
-        headers.add(HttpHeaders.REFERER, "https://wfw.scu.edu.cn/ncov/wap/default/index");
-        headers.add("sec-ch-ua", "\"Chromium\";v=\"92\", \" Not A;Brand\";v=\"99\", \"Google Chrome\";v=\"92\"");
-        headers.add("sec-ch-ua-mobile", "?0");
-        headers.add("Sec-Fetch-Dest", "empty");
-        headers.add("Sec-Fetch-Mode", "cors");
-        headers.add("Sec-Fetch-Site", "same-origin");
-        headers.add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                                                        "(KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36");
-        headers.add("X-Requested-With", "XMLHttpRequest");
-        return headers;
-    }
-
-    @Async
-    public void failHandler(String msg){
-        sendNotify(msg);
-        log.error(msg);
-    }
-
-
-    public void succHandler(String msg){
-        sendNotify(msg);
-        log.info(msg);
-    }
-
-    @Async
-    public void sendNotify(String msg){
-        if (!StringUtils.hasLength(msg)){
-            mailService.sendMail("3025957737@qq.com","[每日打卡]", new Date() +"\n" + "邮件发送失败");
+        Element e = scriptElements.get(3);
+        if (e == null){
+            throw new RuntimeException();
         }
-        try{
-            mailService.sendMail("3025957737@qq.com","[每日打卡]", new Date() +"\n" + msg);
-        }catch (Exception e){
-            log.error("邮件发送-{}", e);
+        String[] s = e.toString().split(";");
+        if (s == null && s.length == 0){
+            throw new RuntimeException();
         }
+        String[] s2 = s[2].split("=");
+        if (s2 == null && s2.length == 0){
+            throw new RuntimeException();
+        }
+        String json = s2[1];
+        if (!StringUtils.hasLength(json)){
+            throw new RuntimeException();
+        }
+        JSONObject jsonObject = JSONObject.parseObject(json);
+        String id = (String) jsonObject.get("id");
+        log.info(id);
+        return id;
+    }
+
+    @SneakyThrows
+    public static void requestCaptcha(String id){
+        String url = String.format(BASE_URL + CAPTCHA_URI, id);
+        ResponseEntity<byte[]> responseEntity = restTemplate.exchange(url, HttpMethod.GET, null, byte[].class);
+        // 获取entity中的数据
+        byte[] body = responseEntity.getBody();
+        if (body == null){
+            log.error("无法获取数据");
+            throw new RuntimeException();
+        }
+        File dest = new File(id + ".png");
+        if(!dest.exists()) {
+            dest.createNewFile();
+        }
+
+        InputStream in = null;
+        OutputStream out = null;
+
+        in = new ByteArrayInputStream(body);
+        out = new FileOutputStream(dest);
+
+        byte []bt = new byte[1024];
+        int length=0;
+        while(	(length = in.read(bt)) !=-1) {
+            out.write(bt,0,length);
+        }
+        if(null!=out) {
+            out.close();
+        }
+
     }
 }

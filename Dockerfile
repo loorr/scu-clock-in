@@ -2,8 +2,12 @@
 FROM openjdk:8-jdk-alpine
 COPY target/*.jar /application.jar
 
-CMD ["--server.port=8080"]
+CMD ["--server.port=8000"]
 
-EXPOSE 8081
+EXPOSE 8000
+ENV TZ Asia/Shanghai
 
-ENTRYPOINT ["java","-jar","/app.jar"]
+RUN apk add tzdata && cp /usr/share/zoneinfo/${TZ} /etc/localtime \
+    && echo ${TZ} > /etc/timezone \
+    && apk del tzdata
+ENTRYPOINT ["java","-jar","/application.jar"]
